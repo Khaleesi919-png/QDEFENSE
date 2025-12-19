@@ -4,15 +4,17 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>國防指揮系統 - 終端中心</title>
+    <title>國防指揮系統 - 聯網同步版</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-    <!-- React & Babel for standalone JSX -->
+    <!-- React & Babel -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- GunDB for Real-time Sync -->
+    <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
     <style>
         body {
             font-family: 'Noto Sans TC', sans-serif;
@@ -20,24 +22,32 @@
             color: #f8fafc;
         }
         .mono { font-family: 'JetBrains Mono', monospace; }
-        /* 隱藏捲軸 */
         ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-track { background: #020617; }
         ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
         ::-webkit-scrollbar-thumb:hover { background: #334155; }
+        .grid-layout {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1rem;
+        }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo, useCallback } = React;
+        const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+        // 初始化 GunDB (使用公共中繼節點實現全球同步)
+        const gun = Gun(['https://gun-manhattan.herokuapp.com/gun', 'https://liberty-island.herokuapp.com/gun']);
+        const db = gun.get('defense_system_shared_v2');
 
         // --- 常數定義 ---
         const PASSCODE = "0000";
-        const PREP_DURATION = 2.5 * 60 * 60 * 1000;   // 2.5 小時準備
-        const ACTIVE_DURATION = 5 * 60 * 60 * 1000; // 5 小時閉城
-        const CD_DURATION = 6 * 60 * 60 * 1000;     // 6 小時冷卻
+        const PREP_DURATION = 2.5 * 60 * 60 * 1000;
+        const ACTIVE_DURATION = 5 * 60 * 60 * 1000;
+        const CD_DURATION = 6 * 60 * 60 * 1000;
 
         const RowOption = {
             ROW_1: '第一排',
@@ -54,42 +64,32 @@
 
         // --- 工具函式 ---
         const formatTime = (ms) => {
+            if (!ms) return '--:--';
             const date = new Date(ms);
             const now = new Date();
             const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
             const targetStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
             const diffDays = Math.round((targetStart - todayStart) / (1000 * 60 * 60 * 24));
 
-            let dayLabel = '';
-            if (diffDays === 0) dayLabel = '今日';
-            else if (diffDays === 1) dayLabel = '明日';
-            else if (diffDays > 1) dayLabel = `${diffDays}天後`;
-            else dayLabel = '已過期';
-
-            const timeStr = date.toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' });
-            return `${dayLabel} ${timeStr}`;
+            let dayLabel = diffDays === 0 ? '今日' : diffDays === 1 ? '明日' : `${diffDays}天後`;
+            return `${dayLabel} ${date.toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' })}`;
         };
 
         const formatDuration = (ms) => {
             if (ms < 0) return "00:00:00";
-            const seconds = Math.floor((ms / 1000) % 60);
-            const minutes = Math.floor((ms / (1000 * 60)) % 60);
-            const hours = Math.floor((ms / (1000 * 60 * 60)));
-            return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            const s = Math.floor((ms / 1000) % 60);
+            const m = Math.floor((ms / (1000 * 60)) % 60);
+            const h = Math.floor((ms / (1000 * 60 * 60)));
+            return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
         };
 
-        const getStatusColors = (status) => {
+        const getStatusStyles = (status) => {
             switch (status) {
                 case DefenseStatus.PREPARING: return 'text-amber-400 border-amber-400/50 bg-amber-400/10';
                 case DefenseStatus.ACTIVE: return 'text-red-500 border-red-500/50 bg-red-500/10 animate-pulse';
                 case DefenseStatus.COOLDOWN: return 'text-blue-400 border-blue-400/50 bg-blue-400/10';
                 default: return 'text-emerald-400 border-emerald-400/50 bg-emerald-400/10';
             }
-        };
-
-        const getLocationColor = (index) => {
-            const colors = ['text-blue-400', 'text-emerald-400', 'text-amber-400', 'text-rose-400', 'text-purple-400', 'text-cyan-400'];
-            return colors[index % colors.length];
         };
 
         // --- 子組件: 防禦點卡片 ---
@@ -102,19 +102,21 @@
                 const timer = setInterval(() => {
                     const currentTime = Date.now();
                     setNow(currentTime);
-
                     if (point.startTime && point.status !== DefenseStatus.READY) {
                         let newStatus = point.status;
                         if (currentTime < point.prepEndTime) newStatus = DefenseStatus.PREPARING;
                         else if (currentTime < point.activeEndTime) newStatus = DefenseStatus.ACTIVE;
                         else if (currentTime < point.cdEndTime) newStatus = DefenseStatus.COOLDOWN;
                         else newStatus = DefenseStatus.READY;
-
                         if (newStatus !== point.status) onUpdate(point.id, { status: newStatus });
                     }
                 }, 1000);
                 return () => clearInterval(timer);
-            }, [point, onUpdate]);
+            }, [point.status, point.startTime, point.id]);
+
+            const remaining = point.status === DefenseStatus.PREPARING ? point.prepEndTime - now :
+                            point.status === DefenseStatus.ACTIVE ? point.activeEndTime - now :
+                            point.status === DefenseStatus.COOLDOWN ? point.cdEndTime - now : null;
 
             const handleImmediate = () => {
                 const start = Date.now();
@@ -128,23 +130,14 @@
             };
 
             const handleSchedule = () => {
-                if (!scheduledTime) return;
                 const [h, m] = scheduledTime.split(':').map(Number);
                 const target = new Date();
                 target.setHours(h, m, 0, 0);
                 if (!isScheduledToday) target.setDate(target.getDate() + 1);
-
                 const activeStart = target.getTime();
-                const start = activeStart - PREP_DURATION;
-
-                if (activeStart + ACTIVE_DURATION + CD_DURATION < Date.now()) {
-                    alert("選擇的時間點已在過去。");
-                    return;
-                }
-
                 onUpdate(point.id, {
                     status: DefenseStatus.PREPARING,
-                    startTime: start,
+                    startTime: activeStart - PREP_DURATION,
                     prepEndTime: activeStart,
                     activeEndTime: activeStart + ACTIVE_DURATION,
                     cdEndTime: activeStart + ACTIVE_DURATION + CD_DURATION,
@@ -152,69 +145,76 @@
                 setScheduledTime('');
             };
 
-            const remaining = point.status === DefenseStatus.PREPARING ? point.prepEndTime - now :
-                            point.status === DefenseStatus.ACTIVE ? point.activeEndTime - now :
-                            point.status === DefenseStatus.COOLDOWN ? point.cdEndTime - now : null;
-
             return (
-                <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-2.5 shadow-md relative overflow-hidden group hover:border-slate-700 transition-all">
-                    <div className={`absolute top-0 right-0 px-1.5 py-0.5 text-[8px] font-bold border-b border-l rounded-bl-lg uppercase ${getStatusColors(point.status)}`}>
+                <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 shadow-lg relative group transition-all hover:border-slate-600">
+                    <div className={`absolute top-0 right-0 px-2 py-0.5 text-[9px] font-bold border-b border-l rounded-bl-lg uppercase ${getStatusStyles(point.status)}`}>
                         {point.status}
                     </div>
-
-                    <div className="flex flex-col gap-2">
-                        <div className="flex items-center gap-1.5">
-                            <span className="text-[10px] font-bold text-blue-500 uppercase">{point.row}</span>
-                            <span className="text-slate-800 text-[10px]">|</span>
-                            <span className="text-xs font-bold text-white truncate">{point.guardian || "未指定"}</span>
+                    <div className="flex flex-col gap-2.5">
+                        <div className="flex items-center gap-2">
+                            <span className="text-[11px] font-black text-blue-500 uppercase">{point.row}</span>
+                            <div className="w-1 h-1 rounded-full bg-slate-700"></div>
+                            <span className="text-sm font-bold text-white truncate">{point.guardian || "未指定門神"}</span>
                         </div>
 
                         {point.status === DefenseStatus.READY ? (
                             <div className="space-y-2">
-                                <div className="grid grid-cols-2 gap-1.5">
-                                    <button onClick={handleImmediate} className="bg-red-600/80 hover:bg-red-600 text-white text-[10px] font-bold py-1.5 rounded">立即閉城</button>
-                                    <button onClick={() => setScheduledTime(scheduledTime ? '' : '12:00')} className="bg-slate-700 hover:bg-slate-600 text-white text-[10px] font-bold py-1.5 rounded">預約閉城</button>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button onClick={handleImmediate} className="bg-red-600 hover:bg-red-500 text-white text-xs font-bold py-2 rounded-lg transition-colors">立即閉城</button>
+                                    <button onClick={() => setScheduledTime(scheduledTime ? '' : '12:00')} className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold py-2 rounded-lg">預約</button>
                                 </div>
                                 {scheduledTime && (
-                                    <div className="bg-slate-950/50 p-2 rounded border border-slate-800 space-y-1.5">
-                                        <div className="flex gap-1">
-                                            <button onClick={()=>setIsScheduledToday(true)} className={`flex-1 text-[8px] py-0.5 rounded ${isScheduledToday ? 'bg-blue-600' : 'bg-slate-800'}`}>今日</button>
-                                            <button onClick={()=>setIsScheduledToday(false)} className={`flex-1 text-[8px] py-0.5 rounded ${!isScheduledToday ? 'bg-blue-600' : 'bg-slate-800'}`}>明日</button>
+                                    <div className="bg-slate-950 p-2 rounded-lg border border-slate-800 animate-in fade-in slide-in-from-top-1">
+                                        <div className="flex gap-1 mb-2">
+                                            <button onClick={()=>setIsScheduledToday(true)} className={`flex-1 text-[10px] py-1 rounded ${isScheduledToday ? 'bg-blue-600' : 'bg-slate-800'}`}>今日</button>
+                                            <button onClick={()=>setIsScheduledToday(false)} className={`flex-1 text-[10px] py-1 rounded ${!isScheduledToday ? 'bg-blue-600' : 'bg-slate-800'}`}>明日</button>
                                         </div>
                                         <div className="flex gap-1">
-                                            <input type="time" value={scheduledTime} onChange={e=>setScheduledTime(e.target.value)} className="flex-1 bg-slate-800 border-none rounded text-[10px] px-1 text-white"/>
-                                            <button onClick={handleSchedule} className="bg-emerald-600 px-2 py-0.5 rounded text-[9px] font-bold">確認</button>
+                                            <input type="time" value={scheduledTime} onChange={e=>setScheduledTime(e.target.value)} className="flex-1 bg-slate-800 border-none rounded text-xs px-2 text-white outline-none focus:ring-1 focus:ring-blue-500"/>
+                                            <button onClick={handleSchedule} className="bg-emerald-600 px-3 py-1 rounded text-xs font-bold hover:bg-emerald-500">確認</button>
                                         </div>
                                     </div>
                                 )}
                             </div>
                         ) : (
                             <>
-                                <div className="grid grid-cols-2 gap-1 text-[9px] bg-slate-950/50 p-1.5 rounded border border-slate-800/50">
-                                    <div><p className="text-slate-500 text-[7px] uppercase">1. 開始閉城</p><p className="mono text-slate-200">{formatTime(point.prepEndTime)}</p></div>
-                                    <div><p className="text-slate-500 text-[7px] uppercase">2. 結束閉城</p><p className="mono text-slate-200">{formatTime(point.activeEndTime)}</p></div>
-                                    <div><p className="text-slate-500 text-[7px] uppercase">3. 冷卻完成</p><p className="mono text-amber-400">{formatTime(point.cdEndTime)}</p></div>
-                                    <div><p className="text-slate-500 text-[7px] uppercase">4. 下次可閉</p><p className="mono text-emerald-400">{formatTime(point.cdEndTime + PREP_DURATION)}</p></div>
+                                <div className="grid grid-cols-2 gap-2 text-[10px] bg-slate-950/80 p-2 rounded-lg border border-slate-800/50">
+                                    <div className="border-r border-slate-800 pr-1">
+                                        <p className="text-slate-500 text-[8px] uppercase font-bold">開始閉城</p>
+                                        <p className="mono text-slate-200">{formatTime(point.prepEndTime)}</p>
+                                    </div>
+                                    <div className="pl-1">
+                                        <p className="text-slate-500 text-[8px] uppercase font-bold">結束閉城</p>
+                                        <p className="mono text-slate-200">{formatTime(point.activeEndTime)}</p>
+                                    </div>
+                                    <div className="border-r border-slate-800 pr-1 pt-1 border-t mt-1">
+                                        <p className="text-slate-500 text-[8px] uppercase font-bold">冷卻完成</p>
+                                        <p className="mono text-amber-400">{formatTime(point.cdEndTime)}</p>
+                                    </div>
+                                    <div className="pl-1 pt-1 border-t mt-1">
+                                        <p className="text-slate-500 text-[8px] uppercase font-bold">下次可啟</p>
+                                        <p className="mono text-emerald-400">{formatTime(point.cdEndTime + PREP_DURATION)}</p>
+                                    </div>
                                 </div>
                                 {remaining > 0 && (
                                     <div className="mt-1">
-                                        <div className="flex justify-between items-end mb-0.5">
-                                            <span className="text-[8px] text-slate-500 font-bold uppercase">{point.status}倒數</span>
-                                            <span className="text-xs font-black mono">{formatDuration(remaining)}</span>
+                                        <div className="flex justify-between items-end mb-1">
+                                            <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">{point.status}倒數</span>
+                                            <span className="text-sm font-black mono text-blue-400">{formatDuration(remaining)}</span>
                                         </div>
-                                        <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
-                                            <div className="h-full bg-blue-500" style={{ width: `${(remaining / (point.status === DefenseStatus.PREPARING ? PREP_DURATION : point.status === DefenseStatus.ACTIVE ? ACTIVE_DURATION : CD_DURATION)) * 100}%` }}></div>
+                                        <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                                            <div className="h-full bg-blue-500 transition-all duration-1000" style={{ width: `${(remaining / (point.status === DefenseStatus.PREPARING ? PREP_DURATION : point.status === DefenseStatus.ACTIVE ? ACTIVE_DURATION : CD_DURATION)) * 100}%` }}></div>
                                         </div>
                                     </div>
                                 )}
                             </>
                         )}
 
-                        <div className="flex justify-between items-center mt-1 pt-1.5 border-t border-slate-800/50">
+                        <div className="flex justify-between items-center mt-1 pt-2 border-t border-slate-800/50">
                             {point.status !== DefenseStatus.READY ? 
-                                <button onClick={()=>onCancel(point.id)} className="text-[8px] bg-slate-800 px-2 py-1 rounded text-slate-400 hover:text-red-400">取消</button> : <div></div>
+                                <button onClick={()=>onCancel(point.id)} className="text-[10px] bg-slate-800 hover:bg-red-900/30 px-3 py-1 rounded-md text-slate-400 hover:text-red-400 transition-all font-bold uppercase">重置</button> : <div></div>
                             }
-                            <button onClick={()=>onRemove(point.id)} className="text-[8px] text-slate-600 hover:text-red-500">移除</button>
+                            <button onClick={()=>onRemove(point.id)} className="text-[10px] text-slate-600 hover:text-red-500 font-bold uppercase">移除據點</button>
                         </div>
                     </div>
                 </div>
@@ -223,51 +223,66 @@
 
         // --- 主程式組件 ---
         const App = () => {
-            const [points, setPoints] = useState([]);
+            const [points, setPoints] = useState({});
             const [isAuthenticated, setIsAuthenticated] = useState(false);
             const [inputPass, setInputPass] = useState("");
             const [nowTime, setNowTime] = useState(new Date());
 
+            // GunDB 即時監聽
             useEffect(() => {
-                const saved = localStorage.getItem('def_pts');
-                if (saved) setPoints(JSON.parse(saved));
+                db.map().on((data, id) => {
+                    if (data) {
+                        setPoints(prev => ({ ...prev, [id]: data }));
+                    } else {
+                        setPoints(prev => {
+                            const next = { ...prev };
+                            delete next[id];
+                            return next;
+                        });
+                    }
+                });
                 const t = setInterval(() => setNowTime(new Date()), 1000);
                 return () => clearInterval(t);
             }, []);
 
-            useEffect(() => {
-                localStorage.setItem('def_pts', JSON.stringify(points));
-            }, [points]);
-
             const addPoint = (loc, row, guar) => {
-                const p = { id: Date.now().toString(), location: loc, row, guardian: guar, status: DefenseStatus.READY, startTime: null, prepEndTime: null, activeEndTime: null, cdEndTime: null };
-                setPoints([p, ...points]);
+                const id = Date.now().toString();
+                db.get(id).put({ id, location: loc, row, guardian: guar, status: DefenseStatus.READY });
             };
 
-            const nestedGroups = useMemo(() => {
-                return points.reduce((acc, p) => {
-                    if (!acc[p.location]) acc[p.location] = { [RowOption.ROW_1]: [], [RowOption.ROW_2]: [], [RowOption.ROW_3]: [] };
-                    acc[p.location][p.row].push(p);
-                    return acc;
-                }, {});
+            const updatePoint = (id, data) => db.get(id).put(data);
+            const removePoint = (id) => db.get(id).put(null);
+            const cancelPoint = (id) => db.get(id).put({ status: DefenseStatus.READY, startTime: null, prepEndTime: null, activeEndTime: null, cdEndTime: null });
+
+            const groupedData = useMemo(() => {
+                const groups = {};
+                Object.values(points).forEach(p => {
+                    if (!groups[p.location]) groups[p.location] = { [RowOption.ROW_1]: [], [RowOption.ROW_2]: [], [RowOption.ROW_3]: [] };
+                    if (groups[p.location][p.row]) groups[p.location][p.row].push(p);
+                });
+                return groups;
             }, [points]);
 
             if (!isAuthenticated) {
                 return (
-                    <div className="min-h-screen flex items-center justify-center p-6">
-                        <div className="max-w-xs w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center shadow-2xl">
-                            <h2 className="text-xl font-black italic mb-6">身分驗證</h2>
-                            <div className="grid grid-cols-3 gap-3">
+                    <div className="min-h-screen flex items-center justify-center p-6 bg-[#020617]">
+                        <div className="max-w-xs w-full bg-slate-900/50 border border-slate-800 rounded-3xl p-8 text-center backdrop-blur-xl shadow-2xl">
+                            <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-blue-900/40">
+                                <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                            </div>
+                            <h2 className="text-xl font-black italic mb-2 text-white">身分驗證</h2>
+                            <p className="text-[10px] text-slate-500 mb-8 uppercase tracking-widest">Global Defense Sync</p>
+                            <div className="grid grid-cols-3 gap-3 mb-6">
                                 {[1,2,3,4,5,6,7,8,9, 'C', 0, 'OK'].map(v => (
                                     <button key={v} onClick={() => {
                                         if (v === 'C') setInputPass("");
                                         else if (v === 'OK') { if (inputPass === PASSCODE) setIsAuthenticated(true); else setInputPass(""); }
                                         else if (inputPass.length < 4) setInputPass(inputPass + v);
-                                    }} className="h-12 bg-slate-800 rounded-xl font-bold hover:bg-slate-700">{v}</button>
+                                    }} className="h-12 bg-slate-800 rounded-xl font-bold hover:bg-slate-700 active:scale-95 transition-all text-white">{v}</button>
                                 ))}
                             </div>
-                            <div className="mt-6 flex justify-center gap-2">
-                                {[0,1,2,3].map(i => <div key={i} className={`w-3 h-3 rounded-full ${inputPass.length > i ? 'bg-blue-500' : 'bg-slate-700'}`}></div>)}
+                            <div className="flex justify-center gap-3">
+                                {[0,1,2,3].map(i => <div key={i} className={`w-3 h-3 rounded-full transition-all duration-300 ${inputPass.length > i ? 'bg-blue-500 scale-125' : 'bg-slate-800'}`}></div>)}
                             </div>
                         </div>
                     </div>
@@ -275,66 +290,98 @@
             }
 
             return (
-                <div className="min-h-screen">
-                    <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur sticky top-0 z-50 px-6 py-4 flex justify-between items-center">
-                        <div>
-                            <h1 className="text-xl font-black italic tracking-tighter uppercase">國防指揮系統</h1>
-                            <p className="text-[9px] text-slate-500 font-bold tracking-widest uppercase">Defense Command Center</p>
+                <div className="min-h-screen pb-20">
+                    <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-50 px-8 py-5 flex justify-between items-center">
+                        <div className="flex items-center gap-4">
+                            <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center shadow-lg shadow-blue-600/20">
+                                <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                            </div>
+                            <div>
+                                <h1 className="text-2xl font-black italic tracking-tighter uppercase leading-none">國防指揮中心</h1>
+                                <p className="text-[10px] text-emerald-500 font-black tracking-widest uppercase flex items-center gap-1.5">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                    Sync Connected / Real-time
+                                </p>
+                            </div>
                         </div>
-                        <div className="text-right">
-                            <p className="text-[10px] text-slate-500 font-bold uppercase">當前時間</p>
-                            <p className="text-xl font-black mono">{nowTime.toLocaleTimeString('zh-TW', { hour12: false })}</p>
+                        <div className="text-right border-l border-slate-800 pl-6">
+                            <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">系統標準時間</p>
+                            <p className="text-2xl font-black mono text-white leading-none">{nowTime.toLocaleTimeString('zh-TW', { hour12: false })}</p>
                         </div>
                     </header>
 
-                    <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-8">
-                        <aside className="lg:col-span-3 space-y-4">
-                            <div className="bg-slate-900 border border-slate-700 rounded-xl p-4">
-                                <h3 className="text-sm font-bold text-blue-400 mb-4 flex items-center gap-2">建立據點</h3>
-                                <form onSubmit={e => {
-                                    e.preventDefault();
-                                    const d = new FormData(e.target);
-                                    if (!d.get('loc')) return;
-                                    addPoint(d.get('loc'), d.get('row'), d.get('guar'));
-                                    e.target.reset();
-                                }} className="space-y-3">
-                                    <input name="loc" placeholder="位置" className="w-full bg-slate-800 border-none rounded-lg px-3 py-2 text-xs focus:ring-1 focus:ring-blue-500" required/>
-                                    <select name="row" className="w-full bg-slate-800 border-none rounded-lg px-3 py-2 text-xs">
-                                        {Object.values(RowOption).map(o => <option key={o} value={o}>{o}</option>)}
-                                    </select>
-                                    <input name="guar" placeholder="門神姓名" className="w-full bg-slate-800 border-none rounded-lg px-3 py-2 text-xs"/>
-                                    <button className="w-full bg-blue-600 py-2 rounded-lg font-bold text-xs">加入據點</button>
-                                </form>
-                            </div>
-                            <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-4 text-[10px] text-slate-500 leading-relaxed">
-                                <h4 className="font-bold uppercase mb-2">系統說明</h4>
-                                <p>1. 準備時間: 2.5小時</p>
-                                <p>2. 閉城時長: 5小時</p>
-                                <p>3. 冷卻時間: 6小時</p>
-                                <p>4. 預約時間為「開始閉城」時間，準備期會自動提前啟動。</p>
+                    <main className="max-w-[1600px] mx-auto p-8 grid grid-cols-1 lg:grid-cols-12 gap-10">
+                        <aside className="lg:col-span-3">
+                            <div className="sticky top-28 space-y-6">
+                                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+                                    <h3 className="text-sm font-black text-blue-400 mb-6 flex items-center gap-2 uppercase italic">部署新據點</h3>
+                                    <form onSubmit={e => {
+                                        e.preventDefault();
+                                        const d = new FormData(e.target);
+                                        if (!d.get('loc')) return;
+                                        addPoint(d.get('loc'), d.get('row'), d.get('guar'));
+                                        e.target.reset();
+                                    }} className="space-y-4">
+                                        <div className="space-y-1.5">
+                                            <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">位置名稱</label>
+                                            <input name="loc" placeholder="輸入戰略位置..." className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-600 outline-none transition-all text-white" required/>
+                                        </div>
+                                        <div className="space-y-1.5">
+                                            <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">排級選取</label>
+                                            <select name="row" className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-600 outline-none transition-all text-white">
+                                                {Object.values(RowOption).map(o => <option key={o} value={o}>{o}</option>)}
+                                            </select>
+                                        </div>
+                                        <div className="space-y-1.5">
+                                            <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">指派門神</label>
+                                            <input name="guar" placeholder="輸入門神姓名..." className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-600 outline-none transition-all text-white"/>
+                                        </div>
+                                        <button className="w-full bg-blue-600 hover:bg-blue-500 py-3.5 rounded-xl font-black text-xs uppercase tracking-widest shadow-lg shadow-blue-900/20 active:scale-95 transition-all mt-2">確認部署</button>
+                                    </form>
+                                </div>
+                                <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-6 text-[11px] text-slate-400 leading-relaxed shadow-lg backdrop-blur-sm">
+                                    <h4 className="font-black text-slate-200 uppercase mb-4 flex items-center gap-2 italic">
+                                        <svg className="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                        閉城協議說明
+                                    </h4>
+                                    <ul className="space-y-3">
+                                        <li className="flex justify-between border-b border-slate-800 pb-2"><span>準備階段</span><span className="text-blue-400 font-bold">2.5 小時</span></li>
+                                        <li className="flex justify-between border-b border-slate-800 pb-2"><span>持續閉城</span><span className="text-red-500 font-bold">5.0 小時</span></li>
+                                        <li className="flex justify-between border-b border-slate-800 pb-2"><span>冷卻周期</span><span className="text-amber-500 font-bold">6.0 小時</span></li>
+                                    </ul>
+                                    <p className="mt-4 text-slate-500 italic">※ 預約時間為「閉城開始時間」，系統將自動計算準備期。</p>
+                                </div>
                             </div>
                         </aside>
 
-                        <section className="lg:col-span-9 space-y-8">
-                            {Object.entries(nestedGroups).length === 0 ? 
-                                <div className="py-20 text-center text-slate-700 font-bold italic border-2 border-dashed border-slate-900 rounded-3xl">無部署資料</div> :
-                                Object.entries(nestedGroups).map(([loc, rows], idx) => (
-                                    <div key={loc} className="bg-slate-900/20 border border-slate-800/40 rounded-2xl p-6">
-                                        <h3 className={`text-xl font-black mb-6 uppercase flex items-center gap-3 ${getLocationColor(idx)}`}>
-                                            <span className="w-1.5 h-6 bg-current opacity-40 rounded"></span>{loc}
-                                        </h3>
-                                        <div className="space-y-8">
+                        <section className="lg:col-span-9 space-y-12">
+                            {Object.entries(groupedData).length === 0 ? 
+                                <div className="py-32 text-center text-slate-800 font-black italic border-4 border-dashed border-slate-900/50 rounded-[3rem] text-xl">
+                                    WAITING FOR DEPLOYMENT DATA...
+                                </div> :
+                                Object.entries(groupedData).map(([loc, rows], idx) => (
+                                    <div key={loc} className="bg-slate-900/10 border border-slate-800/60 rounded-[2rem] p-8 shadow-inner">
+                                        <div className="flex items-center gap-6 mb-8">
+                                            <h3 className={`text-3xl font-black mb-0 uppercase flex items-center gap-4 ${getLocationColor(idx)}`}>
+                                                <span className="w-2.5 h-10 bg-current opacity-30 rounded-full"></span>
+                                                {loc}
+                                            </h3>
+                                            <div className="flex-1 h-px bg-gradient-to-r from-slate-800 to-transparent"></div>
+                                        </div>
+                                        <div className="space-y-10">
                                             {Object.values(RowOption).map(rowKey => rows[rowKey].length > 0 && (
-                                                <div key={rowKey}>
-                                                    <div className="flex items-center gap-3 mb-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-                                                        <span className="text-blue-400">{rowKey}</span><div className="flex-1 h-px bg-slate-800/50"></div>
+                                                <div key={rowKey} className="space-y-5">
+                                                    <div className="flex items-center gap-3 text-[11px] font-black text-slate-500 uppercase tracking-[0.2em] ml-2">
+                                                        <span className="bg-blue-600/10 text-blue-500 px-3 py-1 rounded-full border border-blue-500/20">{rowKey}</span>
+                                                        <span className="opacity-30">|</span>
+                                                        <span>{rows[rowKey].length} NODES</span>
                                                     </div>
-                                                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
+                                                    <div className="grid-layout">
                                                         {rows[rowKey].map(p => (
                                                             <DefenseCard key={p.id} point={p} 
-                                                                onUpdate={(id, up) => setPoints(points.map(x => x.id === id ? {...x, ...up} : x))}
-                                                                onRemove={(id) => setPoints(points.filter(x => x.id !== id))}
-                                                                onCancel={(id) => setPoints(points.map(x => x.id === id ? {...x, status: DefenseStatus.READY, startTime:null} : x))}
+                                                                onUpdate={updatePoint}
+                                                                onRemove={removePoint}
+                                                                onCancel={cancelPoint}
                                                             />
                                                         ))}
                                                     </div>
@@ -346,6 +393,9 @@
                             }
                         </section>
                     </main>
+                    <footer className="mt-20 border-t border-slate-900 py-10 text-center">
+                        <p className="text-[10px] text-slate-700 font-black tracking-[0.3em] uppercase">© 2024 Strategic Command Network - Distributed Sync System</p>
+                    </footer>
                 </div>
             );
         };
