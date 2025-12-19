@@ -67,7 +67,6 @@
             storageBucket: "qdefense-5bc04.firebasestorage.app",
             messagingSenderId: "37882157510",
             appId: "1:37882157510:web:1241b0ba7d9b2b97137ac7",
-            // 重要：補上 Database URL 確保連線
             databaseURL: "https://qdefense-5bc04-default-rtdb.firebaseio.com"
         };
 
@@ -78,7 +77,7 @@
         const database = firebase.database();
         const defensePointsRef = database.ref('defense_points');
 
-        const PASSCODE = "0919";
+        const PASSCODE = "0000";
         const PREP_DURATION = 2.5 * 60 * 60 * 1000;
         const ACTIVE_DURATION = 5 * 60 * 60 * 1000;
         const CD_DURATION = 6 * 60 * 60 * 1000;
@@ -100,7 +99,7 @@
         const formatTime = (ms) => {
             if (!ms || isNaN(ms)) return '--:--';
             const date = new Date(ms);
-            return date.toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' });
+            return date.toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
         };
 
         const formatFullTime = (ms) => {
@@ -109,7 +108,7 @@
             const now = new Date();
             const diffDays = Math.floor((new Date(date.getFullYear(), date.getMonth(), date.getDate()) - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
             const dayLabel = diffDays === 0 ? '今日' : diffDays === 1 ? '明日' : `${diffDays}天後`;
-            return `${dayLabel} ${formatTime(ms)}`;
+            return `${dayLabel} ${formatTime(ms).substring(0, 5)}`; // 卡片內縮短顯示，不顯示秒
         };
 
         const formatDuration = (ms) => {
@@ -135,7 +134,7 @@
         };
 
         // --- Components ---
-        const DefenseCard = ({ point, onUpdate, onRemove, onCancel }) => {
+        const DefenseCard = ({ point, onUpdate, onRemove, onCancel, currentAgent }) => {
             const [now, setNow] = useState(Date.now());
             const [isScheduledToday, setIsScheduledToday] = useState(true);
             const [scheduledTime, setScheduledTime] = useState('');
@@ -156,7 +155,7 @@
                     else newStatus = DefenseStatus.READY;
                     
                     if (newStatus !== point.status) {
-                        onUpdate(point.id, { status: newStatus });
+                        onUpdate(point.id, { status: newStatus }, false); // 自動切換不更換修改者資訊
                     }
                 }
             }, [now, point, onUpdate]);
@@ -174,7 +173,7 @@
                     prepEndTime: start + PREP_DURATION,
                     activeEndTime: start + PREP_DURATION + ACTIVE_DURATION,
                     cdEndTime: start + PREP_DURATION + ACTIVE_DURATION + CD_DURATION,
-                });
+                }, true);
             };
 
             const handleSchedule = () => {
@@ -191,7 +190,7 @@
                     prepEndTime: activeStart,
                     activeEndTime: activeStart + ACTIVE_DURATION,
                     cdEndTime: activeStart + ACTIVE_DURATION + CD_DURATION,
-                });
+                }, true);
                 setScheduledTime('');
             };
 
@@ -211,7 +210,7 @@
                             <div className="space-y-2">
                                 <div className="grid grid-cols-2 gap-2">
                                     <button onClick={handleImmediate} className="bg-red-600 hover:bg-red-500 text-white text-xs font-bold py-2 rounded-lg transition-colors">立即閉城</button>
-                                    <button onClick={() => setScheduledTime(scheduledTime ? '' : '12:00')} className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold py-2 rounded-lg">預約閉城</button>
+                                    <button onClick={() => setScheduledTime(scheduledTime ? '' : '12:00')} className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold py-2 rounded-lg">預約</button>
                                 </div>
                                 {scheduledTime && (
                                     <div className="bg-slate-950 p-2 rounded-lg border border-slate-800 animate-in fade-in slide-in-from-top-1">
@@ -262,9 +261,21 @@
 
                         <div className="flex justify-between items-center mt-1 pt-2 border-t border-slate-800/50">
                             {currentStatus !== DefenseStatus.READY ? 
-                                <button onClick={()=>onCancel(point.id)} className="text-[10px] bg-slate-800 hover:bg-red-900/30 px-3 py-1 rounded-md text-slate-400 hover:text-red-400 transition-all font-bold uppercase">重置進度</button> : <div></div>
+                                <button onClick={()=>onCancel(point.id)} className="text-[10px] bg-slate-800 hover:bg-red-900/30 px-3 py-1 rounded-md text-slate-400 hover:text-red-400 transition-all font-bold uppercase">重置</button> : <div></div>
                             }
                             <button onClick={()=>onRemove(point.id)} className="text-[10px] text-slate-600 hover:text-red-500 font-bold uppercase">移除</button>
+                        </div>
+                        
+                        {/* 探員資訊與修改時間展示 */}
+                        <div className="mt-1 flex flex-col gap-0.5 opacity-60">
+                            <div className="flex justify-between items-center text-[8px] mono text-slate-500 uppercase">
+                                <span>OPERATOR:</span>
+                                <span className="text-blue-400 font-bold">{point.lastModifiedBy || point.deployedBy || "Unknown"}</span>
+                            </div>
+                            <div className="flex justify-between items-center text-[8px] mono text-slate-500 uppercase">
+                                <span>LAST SYNC:</span>
+                                <span>{point.lastModifiedAt ? formatTime(point.lastModifiedAt) : formatTime(point.timestamp)}</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -274,6 +285,7 @@
         const App = () => {
             const [points, setPoints] = useState({});
             const [isAuthenticated, setIsAuthenticated] = useState(false);
+            const [agentName, setAgentName] = useState("");
             const [inputPass, setInputPass] = useState("");
             const [nowTime, setNowTime] = useState(new Date());
             const [isDeploying, setIsDeploying] = useState(false);
@@ -303,7 +315,10 @@
                     row: row || RowOption.ROW_1,
                     guardian: guar || "",
                     status: DefenseStatus.READY,
-                    timestamp: firebase.database.ServerValue.TIMESTAMP
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    deployedBy: agentName || "System",
+                    lastModifiedBy: agentName || "System",
+                    lastModifiedAt: Date.now()
                 })
                 .then(() => setIsDeploying(false))
                 .catch(err => {
@@ -312,9 +327,14 @@
                 });
             };
 
-            const updatePoint = useCallback((id, data) => {
-                defensePointsRef.child(id).update(data);
-            }, []);
+            const updatePoint = useCallback((id, data, shouldTrackAgent = true) => {
+                const payload = { ...data };
+                if (shouldTrackAgent) {
+                    payload.lastModifiedBy = agentName;
+                    payload.lastModifiedAt = Date.now();
+                }
+                defensePointsRef.child(id).update(payload);
+            }, [agentName]);
 
             const removePoint = useCallback((id) => {
                 if(confirm("確定移除據點？")) {
@@ -328,9 +348,11 @@
                     startTime: null, 
                     prepEndTime: null, 
                     activeEndTime: null, 
-                    cdEndTime: null 
+                    cdEndTime: null,
+                    lastModifiedBy: agentName,
+                    lastModifiedAt: Date.now()
                 });
-            }, []);
+            }, [agentName]);
 
             const groupedData = useMemo(() => {
                 const groups = {};
@@ -355,6 +377,10 @@
                 if (val === 'C') {
                     setInputPass("");
                 } else if (val === 'OK') {
+                    if (!agentName.trim()) {
+                        alert("請先輸入探員代號");
+                        return;
+                    }
                     if (inputPass === PASSCODE) {
                         setIsAuthenticated(true);
                     } else {
@@ -373,9 +399,22 @@
                             <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
                                 <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
                             </div>
-                            <h2 className="text-xl font-black mb-1 text-white uppercase">Defense Access</h2>
-                            <p className="text-[9px] text-slate-500 mb-8 uppercase tracking-[0.2em]">Restricted Terminal</p>
-                            <div className="grid grid-cols-3 gap-3 mb-8">
+                            <h2 className="text-xl font-black mb-1 text-white uppercase tracking-tighter italic">Command Access</h2>
+                            <p className="text-[9px] text-slate-500 mb-6 uppercase tracking-[0.2em]">Agent Authorization Required</p>
+                            
+                            {/* 新增探員名稱輸入框 */}
+                            <div className="mb-4">
+                                <label className="text-[10px] text-slate-500 uppercase block text-left ml-2 mb-1 font-bold">探員編號 / 名稱</label>
+                                <input 
+                                    type="text" 
+                                    value={agentName}
+                                    onChange={(e) => setAgentName(e.target.value)}
+                                    placeholder="輸入代號..."
+                                    className="input-dark text-center !py-2.5 !rounded-xl border-blue-900/30"
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-3 mb-6">
                                 {[1,2,3,4,5,6,7,8,9, 'C', 0, 'OK'].map(v => (
                                     <button key={v} onClick={() => handleLogin(v)} className={`h-12 rounded-xl font-bold active:scale-95 transition-all text-white ${v === 'OK' ? 'bg-blue-600' : v === 'C' ? 'bg-slate-800 text-red-400' : 'bg-slate-800'}`}>{v}</button>
                                 ))}
@@ -399,10 +438,14 @@
                             </div>
                             <div>
                                 <h1 className="text-2xl font-black italic tracking-tighter uppercase leading-none text-white">國防指揮系統</h1>
-                                <p className="text-[10px] text-emerald-500 font-black tracking-widest uppercase flex items-center gap-1.5 mt-1">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                                    Firebase Realtime Ready Q喝咖啡的時間做的
-                                </p>
+                                <div className="flex items-center gap-3 mt-1.5">
+                                    <p className="text-[10px] text-emerald-500 font-black tracking-widest uppercase flex items-center gap-1.5">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                        SECURE SYNC ACTIVE by Q喝杯咖啡的時間做的
+                                    </p>
+                                    <span className="text-slate-700">|</span>
+                                    <p className="text-[10px] text-blue-400 font-black tracking-widest uppercase">探員: {agentName}</p>
+                                </div>
                             </div>
                         </div>
                         <div className="text-right border-l border-slate-800 pl-6">
@@ -481,7 +524,14 @@
                                                     </div>
                                                     <div className="grid-layout">
                                                         {rows[rowKey].map(p => (
-                                                            <DefenseCard key={p.id} point={p} onUpdate={updatePoint} onRemove={removePoint} onCancel={cancelPoint} />
+                                                            <DefenseCard 
+                                                                key={p.id} 
+                                                                point={p} 
+                                                                onUpdate={updatePoint} 
+                                                                onRemove={removePoint} 
+                                                                onCancel={cancelPoint} 
+                                                                currentAgent={agentName}
+                                                            />
                                                         ))}
                                                     </div>
                                                 </div>
@@ -493,7 +543,7 @@
                         </section>
                     </main>
                     <footer className="mt-20 border-t border-slate-900 py-10 text-center">
-                        <p className="text-[10px] text-slate-700 font-black tracking-[0.4em] uppercase">Cloud Base Strategic Network Active / Protocol 7.2</p>
+                        <p className="text-[10px] text-slate-700 font-black tracking-[0.4em] uppercase">Cloud Base Strategic Network Active / Agent Protocol Verified</p>
                     </footer>
                 </div>
             );
