@@ -44,14 +44,13 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
-        // 初始化 GunDB (增加更多穩定中繼點)
+        // 初始化 GunDB (使用更穩定的多重中繼點)
         const gun = Gun([
             'https://gun-manhattan.herokuapp.com/gun',
             'https://peer.wall.org/gun',
             'https://gundb-relay-jp.herokuapp.com/gun'
         ]);
-        // 使用專屬頻道名稱避免衝突
-        const db = gun.get('defense_system_v3_secure');
+        const db = gun.get('defense_system_v4_stable');
 
         const PASSCODE = "0000";
         const PREP_DURATION = 2.5 * 60 * 60 * 1000;
@@ -85,7 +84,7 @@
         };
 
         const formatDuration = (ms) => {
-            if (!ms || ms < 0) return "00:00:00";
+            if (!ms || ms < 0 || isNaN(ms)) return "00:00:00";
             const s = Math.floor((ms / 1000) % 60);
             const m = Math.floor((ms / (1000 * 60)) % 60);
             const h = Math.floor((ms / (1000 * 60 * 60)));
@@ -108,7 +107,7 @@
 
         // --- 子組件: 防禦點卡片 ---
         const DefenseCard = ({ point, onUpdate, onRemove, onCancel }) => {
-            if (!point) return null;
+            if (!point || !point.id) return null;
 
             const [now, setNow] = useState(Date.now());
             const [isScheduledToday, setIsScheduledToday] = useState(true);
@@ -121,9 +120,9 @@
                     
                     if (point.startTime && point.status !== DefenseStatus.READY) {
                         let newStatus = point.status;
-                        if (currentTime < point.prepEndTime) newStatus = DefenseStatus.PREPARING;
-                        else if (currentTime < point.activeEndTime) newStatus = DefenseStatus.ACTIVE;
-                        else if (currentTime < point.cdEndTime) newStatus = DefenseStatus.COOLDOWN;
+                        if (currentTime < (point.prepEndTime || 0)) newStatus = DefenseStatus.PREPARING;
+                        else if (currentTime < (point.activeEndTime || 0)) newStatus = DefenseStatus.ACTIVE;
+                        else if (currentTime < (point.cdEndTime || 0)) newStatus = DefenseStatus.COOLDOWN;
                         else newStatus = DefenseStatus.READY;
                         
                         if (newStatus !== point.status) {
@@ -134,9 +133,10 @@
                 return () => clearInterval(timer);
             }, [point.status, point.startTime, point.prepEndTime, point.activeEndTime, point.cdEndTime, point.id, onUpdate]);
 
-            const remaining = point.status === DefenseStatus.PREPARING ? point.prepEndTime - now :
-                            point.status === DefenseStatus.ACTIVE ? point.activeEndTime - now :
-                            point.status === DefenseStatus.COOLDOWN ? point.cdEndTime - now : null;
+            const currentStatus = point.status || DefenseStatus.READY;
+            const remaining = currentStatus === DefenseStatus.PREPARING ? (point.prepEndTime || 0) - now :
+                            currentStatus === DefenseStatus.ACTIVE ? (point.activeEndTime || 0) - now :
+                            currentStatus === DefenseStatus.COOLDOWN ? (point.cdEndTime || 0) - now : null;
 
             const handleImmediate = () => {
                 const start = Date.now();
@@ -169,21 +169,21 @@
 
             return (
                 <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 shadow-lg relative group transition-all hover:border-slate-600">
-                    <div className={`absolute top-0 right-0 px-2 py-0.5 text-[9px] font-bold border-b border-l rounded-bl-lg uppercase ${getStatusStyles(point.status)}`}>
-                        {point.status || '待命'}
+                    <div className={`absolute top-0 right-0 px-2 py-0.5 text-[9px] font-bold border-b border-l rounded-bl-lg uppercase ${getStatusStyles(currentStatus)}`}>
+                        {currentStatus}
                     </div>
                     <div className="flex flex-col gap-2.5">
                         <div className="flex items-center gap-2">
                             <span className="text-[11px] font-black text-blue-500 uppercase">{point.row || '未分類'}</span>
                             <div className="w-1 h-1 rounded-full bg-slate-700"></div>
-                            <span className="text-sm font-bold text-white truncate">{point.guardian || "未指定門神"}</span>
+                            <span className="text-sm font-bold text-white truncate">{point.guardian || "未指定"}</span>
                         </div>
 
-                        {point.status === DefenseStatus.READY || !point.status ? (
+                        {currentStatus === DefenseStatus.READY ? (
                             <div className="space-y-2">
                                 <div className="grid grid-cols-2 gap-2">
                                     <button onClick={handleImmediate} className="bg-red-600 hover:bg-red-500 text-white text-xs font-bold py-2 rounded-lg transition-colors">立即閉城</button>
-                                    <button onClick={() => setScheduledTime(scheduledTime ? '' : '12:00')} className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold py-2 rounded-lg">預約閉城</button>
+                                    <button onClick={() => setScheduledTime(scheduledTime ? '' : '12:00')} className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold py-2 rounded-lg">預約</button>
                                 </div>
                                 {scheduledTime && (
                                     <div className="bg-slate-950 p-2 rounded-lg border border-slate-800 animate-in fade-in slide-in-from-top-1">
@@ -193,7 +193,7 @@
                                         </div>
                                         <div className="flex gap-1">
                                             <input type="time" value={scheduledTime} onChange={e=>setScheduledTime(e.target.value)} className="flex-1 bg-slate-800 border-none rounded text-xs px-2 text-white outline-none focus:ring-1 focus:ring-blue-500"/>
-                                            <button onClick={handleSchedule} className="bg-emerald-600 px-3 py-1 rounded text-xs font-bold hover:bg-emerald-500">確認</button>
+                                            <button onClick={handleSchedule} className="bg-emerald-600 px-3 py-1 rounded text-xs font-bold hover:bg-emerald-500">OK</button>
                                         </div>
                                     </div>
                                 )}
@@ -215,17 +215,17 @@
                                     </div>
                                     <div className="pl-1 pt-1 border-t mt-1">
                                         <p className="text-slate-500 text-[8px] uppercase font-bold">下次可啟</p>
-                                        <p className="mono text-emerald-400">{formatTime(point.cdEndTime + PREP_DURATION)}</p>
+                                        <p className="mono text-emerald-400">{formatTime((point.cdEndTime || 0) + PREP_DURATION)}</p>
                                     </div>
                                 </div>
-                                {remaining > 0 && (
+                                {remaining !== null && remaining > 0 && (
                                     <div className="mt-1">
                                         <div className="flex justify-between items-end mb-1">
-                                            <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">{point.status}倒數</span>
+                                            <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">{currentStatus}倒數</span>
                                             <span className="text-sm font-black mono text-blue-400">{formatDuration(remaining)}</span>
                                         </div>
                                         <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                                            <div className="h-full bg-blue-500 transition-all duration-1000" style={{ width: `${Math.min(100, Math.max(0, (remaining / (point.status === DefenseStatus.PREPARING ? PREP_DURATION : point.status === DefenseStatus.ACTIVE ? ACTIVE_DURATION : CD_DURATION)) * 100))}%` }}></div>
+                                            <div className="h-full bg-blue-500 transition-all duration-1000" style={{ width: `${Math.min(100, Math.max(0, (remaining / (currentStatus === DefenseStatus.PREPARING ? PREP_DURATION : currentStatus === DefenseStatus.ACTIVE ? ACTIVE_DURATION : CD_DURATION)) * 100))}%` }}></div>
                                         </div>
                                     </div>
                                 )}
@@ -233,8 +233,8 @@
                         )}
 
                         <div className="flex justify-between items-center mt-1 pt-2 border-t border-slate-800/50">
-                            {point.status !== DefenseStatus.READY ? 
-                                <button onClick={()=>onCancel(point.id)} className="text-[10px] bg-slate-800 hover:bg-red-900/30 px-3 py-1 rounded-md text-slate-400 hover:text-red-400 transition-all font-bold uppercase">重置進度</button> : <div></div>
+                            {currentStatus !== DefenseStatus.READY ? 
+                                <button onClick={()=>onCancel(point.id)} className="text-[10px] bg-slate-800 hover:bg-red-900/30 px-3 py-1 rounded-md text-slate-400 hover:text-red-400 transition-all font-bold uppercase">重置</button> : <div></div>
                             }
                             <button onClick={()=>onRemove(point.id)} className="text-[10px] text-slate-600 hover:text-red-500 font-bold uppercase">移除</button>
                         </div>
@@ -259,32 +259,43 @@
                             delete newState[id];
                             return newState;
                         });
-                    } else if (data && typeof data === 'object') {
+                    } else if (data && typeof data === 'object' && data.id) {
+                        // 過濾 GunDB 內部屬性，只保留防禦點資料
                         setPoints(prev => ({ ...prev, [id]: data }));
                     }
                 });
                 const t = setInterval(() => setNowTime(new Date()), 1000);
                 return () => {
                     clearInterval(t);
-                    // GunDB 不需要像一般 listener 那樣手動 off，但這是一個好的實踐
+                    // GunDB listener 卸載
+                    db.map().off();
                 };
             }, []);
 
             const addPoint = (loc, row, guar) => {
                 if (!loc) return;
-                const id = 'pt_' + Date.now();
-                db.get(id).put({ id, location: loc, row, guardian: guar, status: DefenseStatus.READY });
+                const id = 'pt_' + Date.now() + Math.random().toString(36).substr(2, 5);
+                db.get(id).put({ 
+                    id, 
+                    location: loc, 
+                    row: row || RowOption.ROW_1, 
+                    guardian: guar || "", 
+                    status: DefenseStatus.READY 
+                });
             };
 
             const updatePoint = useCallback((id, data) => {
+                if (!id) return;
                 db.get(id).put(data);
             }, []);
 
             const removePoint = useCallback((id) => {
+                if (!id) return;
                 db.get(id).put(null);
             }, []);
 
             const cancelPoint = useCallback((id) => {
+                if (!id) return;
                 db.get(id).put({ 
                     status: DefenseStatus.READY, 
                     startTime: null, 
@@ -294,10 +305,12 @@
                 });
             }, []);
 
+            // 資料分組與防禦性渲染處理
             const groupedData = useMemo(() => {
                 const groups = {};
                 Object.values(points).forEach(p => {
-                    if (!p || !p.location) return;
+                    if (!p || typeof p !== 'object' || !p.location || !p.id) return;
+                    
                     if (!groups[p.location]) {
                         groups[p.location] = { 
                             [RowOption.ROW_1]: [], 
@@ -305,11 +318,10 @@
                             [RowOption.ROW_3]: [] 
                         };
                     }
-                    if (p.row && groups[p.location][p.row]) {
-                        groups[p.location][p.row].push(p);
-                    } else {
-                        // 默認放入第一排防止崩潰
-                        groups[p.location][RowOption.ROW_1].push(p);
+                    
+                    const row = p.row || RowOption.ROW_1;
+                    if (groups[p.location][row]) {
+                        groups[p.location][row].push(p);
                     }
                 });
                 return groups;
@@ -322,7 +334,7 @@
                     if (inputPass === PASSCODE) {
                         setIsAuthenticated(true);
                     } else {
-                        alert("授權失敗：密碼錯誤");
+                        alert("授權失敗");
                         setInputPass("");
                     }
                 } else {
@@ -337,15 +349,15 @@
                             <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-blue-900/40">
                                 <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
                             </div>
-                            <h2 className="text-xl font-black italic mb-1 text-white uppercase tracking-tighter">Command Center</h2>
-                            <p className="text-[9px] text-slate-500 mb-8 uppercase tracking-[0.2em]">Restricted Access Only</p>
+                            <h2 className="text-xl font-black italic mb-1 text-white uppercase">Defense Access</h2>
+                            <p className="text-[9px] text-slate-500 mb-8 uppercase tracking-[0.2em]">Restricted Terminal</p>
                             
                             <div className="grid grid-cols-3 gap-3 mb-8">
                                 {[1,2,3,4,5,6,7,8,9, 'C', 0, 'OK'].map(v => (
                                     <button 
                                         key={v} 
                                         onClick={() => handleLogin(v)} 
-                                        className={`h-12 rounded-xl font-bold active:scale-95 transition-all text-white ${v === 'OK' ? 'bg-blue-600 hover:bg-blue-500' : v === 'C' ? 'bg-slate-800 hover:bg-slate-700 text-red-400' : 'bg-slate-800 hover:bg-slate-700'}`}
+                                        className={`h-12 rounded-xl font-bold active:scale-95 transition-all text-white ${v === 'OK' ? 'bg-blue-600 hover:bg-blue-500 text-sm' : v === 'C' ? 'bg-slate-800 hover:bg-slate-700 text-red-400' : 'bg-slate-800 hover:bg-slate-700'}`}
                                     >
                                         {v}
                                     </button>
@@ -373,12 +385,12 @@
                                 <h1 className="text-2xl font-black italic tracking-tighter uppercase leading-none">國防指揮中心</h1>
                                 <p className="text-[10px] text-emerald-500 font-black tracking-widest uppercase flex items-center gap-1.5 mt-1">
                                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                                    Sync Online
+                                    Network Active
                                 </p>
                             </div>
                         </div>
                         <div className="text-right border-l border-slate-800 pl-6">
-                            <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">系統標準時間 (24H)</p>
+                            <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">系統標準時間</p>
                             <p className="text-2xl font-black mono text-white leading-none tracking-tight">
                                 {nowTime.toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                             </p>
@@ -389,7 +401,7 @@
                         <aside className="lg:col-span-3">
                             <div className="sticky top-28 space-y-6">
                                 <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
-                                    <h3 className="text-sm font-black text-blue-400 mb-6 flex items-center gap-2 uppercase italic border-b border-slate-800 pb-2">部署新戰點</h3>
+                                    <h3 className="text-sm font-black text-blue-400 mb-6 flex items-center gap-2 uppercase italic border-b border-slate-800 pb-2">部署戰點</h3>
                                     <form onSubmit={e => {
                                         e.preventDefault();
                                         const d = new FormData(e.target);
@@ -399,33 +411,28 @@
                                         e.target.reset();
                                     }} className="space-y-4">
                                         <div className="space-y-1.5">
-                                            <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">位置名稱</label>
-                                            <input name="loc" placeholder="輸入地理位置..." className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-600 outline-none transition-all text-white" required/>
+                                            <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">位置</label>
+                                            <input name="loc" placeholder="戰場位置..." className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-600 outline-none transition-all text-white" required/>
                                         </div>
                                         <div className="space-y-1.5">
-                                            <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">防守排級</label>
+                                            <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">排級</label>
                                             <select name="row" className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-600 outline-none transition-all text-white">
                                                 {Object.values(RowOption).map(o => <option key={o} value={o}>{o}</option>)}
                                             </select>
                                         </div>
                                         <div className="space-y-1.5">
-                                            <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">指派門神</label>
-                                            <input name="guar" placeholder="姓名..." className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-600 outline-none transition-all text-white"/>
+                                            <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">門神</label>
+                                            <input name="guar" placeholder="指派人員..." className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-600 outline-none transition-all text-white"/>
                                         </div>
-                                        <button className="w-full bg-blue-600 hover:bg-blue-500 py-3.5 rounded-xl font-black text-xs uppercase tracking-widest shadow-lg shadow-blue-900/20 active:scale-95 transition-all mt-2">確認部署</button>
+                                        <button className="w-full bg-blue-600 hover:bg-blue-500 py-3.5 rounded-xl font-black text-xs uppercase tracking-widest shadow-lg shadow-blue-900/20 active:scale-95 transition-all mt-2">部署據點</button>
                                     </form>
                                 </div>
                                 <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-6 text-[11px] text-slate-400 leading-relaxed shadow-lg backdrop-blur-sm">
-                                    <h4 className="font-black text-slate-200 uppercase mb-4 flex items-center gap-2 italic">
-                                        <svg className="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                                        閉城規範說明
+                                    <h4 className="font-black text-slate-200 uppercase mb-4 italic flex items-center gap-2">
+                                        <div className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-ping"></div>
+                                        同步協議
                                     </h4>
-                                    <ul className="space-y-3">
-                                        <li className="flex justify-between border-b border-slate-800 pb-2"><span>1. 準備期</span><span className="text-blue-400 font-bold">2.5 H</span></li>
-                                        <li className="flex justify-between border-b border-slate-800 pb-2"><span>2. 閉城期</span><span className="text-red-500 font-bold">5.0 H</span></li>
-                                        <li className="flex justify-between border-b border-slate-800 pb-2"><span>3. 冷卻期</span><span className="text-amber-500 font-bold">6.0 H</span></li>
-                                    </ul>
-                                    <p className="mt-4 text-slate-500 italic">※ 所有動作將即時同步至全體終端機。</p>
+                                    <p>當前裝置已連接至雲端網路。任何修改將即時反映至所有登入終端。</p>
                                 </div>
                             </div>
                         </aside>
@@ -433,7 +440,7 @@
                         <section className="lg:col-span-9 space-y-12">
                             {Object.keys(groupedData).length === 0 ? 
                                 <div className="py-40 text-center text-slate-800 font-black italic border-4 border-dashed border-slate-900/50 rounded-[3rem] text-xl">
-                                    AWAITING STRATEGIC DEPLOYMENT...
+                                    NODES OFFLINE / AWAITING DATA...
                                 </div> :
                                 Object.entries(groupedData).map(([loc, rows], idx) => (
                                     <div key={loc} className="bg-slate-900/10 border border-slate-800/60 rounded-[2.5rem] p-8 shadow-inner">
@@ -450,7 +457,7 @@
                                                     <div className="flex items-center gap-3 text-[11px] font-black text-slate-500 uppercase tracking-[0.2em] ml-2">
                                                         <span className="bg-blue-600/10 text-blue-500 px-3 py-1 rounded-full border border-blue-500/20">{rowKey}</span>
                                                         <span className="opacity-30">|</span>
-                                                        <span>{rows[rowKey].length} NODES</span>
+                                                        <span>{rows[rowKey].length} NODES Active</span>
                                                     </div>
                                                     <div className="grid-layout">
                                                         {rows[rowKey].map(p => (
@@ -470,7 +477,7 @@
                         </section>
                     </main>
                     <footer className="mt-20 border-t border-slate-900 py-10 text-center">
-                        <p className="text-[10px] text-slate-700 font-black tracking-[0.4em] uppercase">Strategic Defense Protocol V3.0 / Distributed Network Active</p>
+                        <p className="text-[10px] text-slate-700 font-black tracking-[0.4em] uppercase">Strategic Defense Network Active / Remote Terminal Protocol 4.0</p>
                     </footer>
                 </div>
             );
